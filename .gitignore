@@ -21,6 +21,7 @@ sdist/
 var/
 wheels/
 share/python-wheels/
+temp/
 *.egg-info/
 .installed.cfg
 *.egg
@@ -205,3 +206,6 @@ cython_debug/
 marimo/_static/
 marimo/_lsp/
 __marimo__/
+
+**/.DS_Store
+dataset/
