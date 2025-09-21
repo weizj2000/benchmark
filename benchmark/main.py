@@ -40,6 +40,8 @@ def main():
     global WARMED
     WARMED = args.disable_warm
     metadata_dict = check_metadata_args(args.metadata)
+    if args.case_id:
+        metadata_dict['case_id'] = args.case_id
 
     # 解析自定义数据集，dataset_field参数为字典
     dataset_field = args.dataset_field

@@ -464,10 +464,9 @@ class Result:
 
     @staticmethod
     def export_to_excel(case_id, model_id, db_path,
-                        mode, stop_slo_ttft,
-                        stop_slo_throughput,
+                        mode, goodput,
                         tested_input_output_label,
-                        result_dir, export_col=''):
+                        result_dir, export_col='', result_dirname='results'):
         logger.info('exporting to excel...')
         # db_path, arch, gpu_type, gpu_count, instance_count, model_id, backend
         if mode == 'static':
@@ -477,6 +476,10 @@ class Result:
         else:
             raise ValueError(f"Invalid mode: {mode}")
 
+        slo_ttft = goodput.get("ttft")
+        slo_throughput = goodput.get("throughput")
+        slo_tpot = goodput.get("tpot")
+
         export_col = ', ' + ', '.join(export_col) if export_col else ''
 
         _df = IOUtils.find_max_concurrent_under_slo(
@@ -485,9 +488,9 @@ class Result:
                 conn=sqlite3.connect(db_path),
                 mode=mode,
                 to_round=2),
-            conditions=('mean_TTFT', 'mean_decode_throughput'),
-            thresholds=(stop_slo_ttft, stop_slo_throughput),
-            compare_methods=('<', '>'),
+            conditions=('TTFT_P99', 'TPOT_P99'),
+            thresholds=(slo_ttft, slo_tpot),
+            compare_methods=('<', '<'),
             target='batch',
             tmp_col='temp_label_max_batch',
             group_by='question_label'
@@ -500,7 +503,7 @@ class Result:
             label_max='temp_label_max_batch',
             case_id=case_id,
             model_id=model_id,
-            output_dir=Path(result_dir) / 'results'
+            output_dir=Path(result_dir) / result_dirname
         )
 
 
@@ -533,7 +536,7 @@ class StopStrategy:
 
     def at_slo(self, result_dict, stop_slo_dict, input_len, output_len):
         # 指定要提取的键
-        keys_to_extract = ['mean_TTFT', 'mean_decode_throughput']
+        keys_to_extract = ['TTFT_P99', 'TPOT_P99']
 
         # 使用 items() 方法创建新字典
         new_dict = dict((key, value) for key, value in result_dict.items() if key in keys_to_extract)
@@ -544,9 +547,9 @@ class StopStrategy:
 
         flag_ttft, flag_throughput = False, False
         if 'ttft' in stop_slo_dict:
-            flag_ttft = new_dict['mean_TTFT'] > stop_ttft
-        if 'throughput' in stop_slo_dict:
-            flag_throughput = new_dict['mean_decode_throughput'] < stop_slo_dict['throughput']
+            flag_ttft = new_dict['TTFT_P99'] > stop_ttft
+        if 'tpot' in stop_slo_dict:
+            flag_throughput = new_dict['TPOT_P99'] > stop_slo_dict['tpot']
 
         # During the ACC testing,
         # testing a batch again will cause the flag to be set to False once more,
@@ -625,3 +628,5 @@ class StopStrategy:
 
         logger.info(f"Expect Value: {expected_value}. Attempting to get accuracy batch: {calculated_batch}")
         return calculated_batch
+
+

@@ -54,7 +54,7 @@ def parse_args():
     parser.add_argument('--dataset-path', type=str,
                         help='dataset path, such as /xx/xxx/filtered.json. '
                              'default is filtered.json',
-                        default=f"{os.path.join(os.path.dirname(__file__), '../dataset', 'filtered.json')}"
+                        default="/workspace/dataset/filtered.json"
                         )
     parser.add_argument('--dataset-name', type=str,
                         choices=['filtered', 'sharegpt', 'normal', 'custom'],
@@ -118,7 +118,7 @@ def parse_args():
                              "For more context on the definition of "
                              "goodput, refer to DistServe paper: https://arxiv.org/pdf/2401.09670 "
                              "and the blog: https://hao-ai-lab.github.io/blogs/distserve",
-                        default={"ttft": 10000, "throughput": 10}  # 新slo，注意非deepseek-r1时为该指标线
+                        default={"ttft": 10000, "tpot": 100}  # 新slo，注意非deepseek-r1时为该指标线
                         )
     # static mode test params
     parser.add_argument('--input-len', type=parse_input_list,
@@ -134,8 +134,8 @@ def parse_args():
     parser.add_argument('--stop-slo', type=parse_input_dict,
                         help='Whether to stop the benchmark '
                              'if the SLO has been achieved.'
-                             'default is ["ttft:10000", "throughput:10"]',
-                        default={"ttft": 15000, "throughput": 7}
+                             'default is {"ttft": 15000, "tpot": 150}',
+                        default={"ttft": 15000, "tpot": 150}
                         )
     parser.add_argument("--disable-acc", action="store_true",
                         help="Whether to enable accuracy test. "
@@ -149,7 +149,7 @@ def parse_args():
                              "all: Traverse all --max-concurrency."
                              "method to find the accurate concurrency that achieves slo")
     parser.add_argument("--acc-col", type=str,
-                        default="mean_TTFT",
+                        default="TTFT_P99",
                         help="Reference column names for precise testing. Default is 'mean_TTFT'.")
     # dynamic test mode options
     parser.add_argument("--dynamic-output-len",
@@ -174,6 +174,26 @@ def parse_args():
     parser.add_argument('--disable-pbar', action='store_true',
                         help='Whether to open progress bar.',
                         )
+    parser.add_argument('--enable-auto-batch', action='store_true',
+                        help='Whether to enable auto find best batch.',
+                        )
+    parser.add_argument('--sparse-step', type=int,
+                        default=50,
+                        help='Sparsity sampling step size parameter, takes effect when auto-batch mode is enabled.',
+                        )
+    parser.add_argument('--dense-step', type=int,
+                        default=20,
+                        help='Dense sampling step size parameter, takes effect when auto-batch mode is enabled.',
+                        )
+    parser.add_argument('--dynamic-strategy', type=str,
+                        choices=["fast", "exhaustive"], default="fast",
+                        help='Dynamic test mode strategy. default is fast.',
+                        )
+    parser.add_argument('--dynamic-result-key-map', type=parse_input_dict,
+                        help='Auto mapping of dynamic result keys to the corresponding metric names. '
+                             'default is {"ttft": "TTFT_P99", "tpot": "TPOT_P99"}',
+                        default={"ttft": "TTFT_P99", "tpot": "TPOT_P99"}
+                        )
     # result save options
     # parser = parser.add_argument_group("save options")
     parser.add_argument("--metadata",
@@ -185,6 +205,8 @@ def parse_args():
                              "for metadata of this run to be saved in the result JSON file "
                              "for record keeping purposes.",
                         )
+    parser.add_argument("--case-id", type=str,
+                        default=None, help="Case ID for the benchmark run.")
     parser.add_argument("--disable-save-result",
                         action="store_true",
                         help="Specify to save benchmark results to db.",
@@ -193,11 +215,15 @@ def parse_args():
                         type=str,
                         help="Specify directory to save benchmark json results."
                              "If not specified, results are saved in the current directory.",
-                        default=f'{os.path.join(os.path.dirname(__file__), "temp")}')
+                        default='/workspace/result')
     parser.add_argument("--result-filename",
                         type=str,
                         help="Specify the filename to save benchmark json results.",
                         default='model_performance')
+    parser.add_argument("--result-dirname",
+                        type=str,
+                        help="Specify the directory name to save benchmark excel results.",
+                        default='results')
     parser.add_argument("--disable-export-to-excel", action="store_true",
                         help="Specify to export benchmark results to excel.")
     parser.add_argument("--export-col", nargs="*",

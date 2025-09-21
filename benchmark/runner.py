@@ -17,6 +17,7 @@ from transformers import PreTrainedTokenizerBase, AutoTokenizer
 
 from .metrics import MetricsCalculator
 from .models import RequestFuncInput, RequestFuncOutput
+from .opt import find_optimal_batch
 from .requester import AsyncRequester, warmup, limited_request_func
 from .util import logger, DatasetLoader, Result, StopStrategy
 from .const import WARMED
@@ -26,6 +27,7 @@ async def get_request(
         input_requests: List[Tuple[str, int, int, Optional[dict]]],
         request_rate: float,
         burstiness: float = 1.0,
+        mode: str = "static",
 ) -> AsyncGenerator[Tuple[str, int, int, Optional[dict]], None]:
     """
     Asynchronously generates requests at a specified rate
@@ -56,8 +58,9 @@ async def get_request(
         yield request
 
         if request_rate == float("inf"):
-            # If the request rate is infinity, then we don't need to wait.
-            continue
+            if mode == "static":
+                # If the request rate is infinity, then we don't need to wait.
+                continue
 
         # Sample the request interval from the gamma distribution.
         # If burstiness is 1, it follows exponential distribution.
@@ -85,6 +88,7 @@ async def benchmark(
         pod_num: int = 1,
         question_label: str = "",
         response_mode: str = 'openai',
+        mode: str = "static",
 ) -> OrderedDict:
 
     if response_mode == 'openai':
@@ -154,7 +158,7 @@ async def benchmark(
 
     benchmark_start_time = time.perf_counter()
     tasks: List[asyncio.Task] = []
-    async for request in get_request(input_requests, request_rate, burstiness):
+    async for request in get_request(input_requests, request_rate, burstiness, mode):
         prompt, prompt_len, output_len, mm_content = request
         request_func_input = RequestFuncInput(model=model_id,
                                               prompt=prompt,
@@ -524,11 +528,11 @@ class BenchmarkRunner:
                                                  db_path=Path(self.args.result_dir) / Path(
                                                      f'{self.args.result_filename}.db'),
                                                  mode='static',
-                                                 stop_slo_ttft=self.stop_slo_dict['ttft'],
-                                                 stop_slo_throughput=self.stop_slo_dict['throughput'],
+                                                 goodput=self.goodput_config_dict,
                                                  tested_input_output_label=tuple(tested_input_output_label),
                                                  result_dir=Path(self.args.result_dir),
-                                                 export_col=self.args.export_col
+                                                 export_col=self.args.export_col,
+                                                 result_dirname=self.args.result_dirname
                                                  )
             pass
 
@@ -539,48 +543,97 @@ class BenchmarkRunner:
             assert len(self.args.max_concurrency) == len(self.args.num_prompts)
             args_num_prompts = self.args.num_prompts
 
+        benchmark_dict = {
+            "api_url": self.api_url,
+            "base_url": self.base_url,
+            "model_id": self.model_id,
+            "logprobs": self.args.logprobs,
+            "best_of": self.args.best_of,
+            "request_rate": self.args.request_rate,
+            "burstiness": self.args.burstiness,
+            "open_pbar": self.args.open_pbar,
+            "profile": self.args.profile,
+            "selected_percentile_metrics": self.args.percentile_metrics.split(","),
+            "selected_percentiles": [float(p) for p in self.args.metric_percentiles.split(",")],
+            "ignore_eos": self.args.ignore_eos,
+            "goodput_config_dict": self.goodput_config_dict,
+            "pod_num": int(self.metadata_dict.get('replicas', 1)),
+            "question_label": 'dynamic',
+            "response_mode": self.args.response_mode,
+            "mode": 'dynamic'
+        }
+        input_requests = self.load_dataset.sample_requests(
+            num_requests=args_num_prompts[0],
+            tokenizer=self.tokenizer,
+            fixed_output_len=self.args.dynamic_output_len,
+            shuffle=self.args.shuffle,
+            prompt_max_len=self.args.dynamic_input_len,
+            prompt_len_scale=self.args.dynamic_prompt_len_scale,
+            enable_same_prompt=self.args.enable_same_prompt
+        )
+        benchmark_dict["input_requests"] = input_requests
         try:
-            for batch, num_prompts in zip(self.args.max_concurrency, args_num_prompts):
-                input_requests = self.load_dataset.sample_requests(
-                    num_requests=num_prompts,
-                    tokenizer=self.tokenizer,
-                    fixed_output_len=self.args.dynamic_output_len,
-                    shuffle=self.args.shuffle,
-                    prompt_max_len=self.args.dynamic_input_len,
-                    prompt_len_scale=self.args.dynamic_prompt_len_scale,
-                    enable_same_prompt=self.args.enable_same_prompt
-                )
-
-                benchmark_result = asyncio.run(
-                    benchmark(
-                        api_url=self.api_url,
-                        base_url=self.base_url,
-                        model_id=self.model_id,
-                        input_requests=input_requests,
-                        logprobs=self.args.logprobs,
-                        best_of=self.args.best_of,
-                        request_rate=self.args.request_rate,
-                        burstiness=self.args.burstiness,
-                        open_pbar=self.args.open_pbar,
-                        profile=self.args.profile,
-                        selected_percentile_metrics=self.args.percentile_metrics.split(","),
-                        selected_percentiles=[
-                            float(p) for p in self.args.metric_percentiles.split(",")
-                        ],
-                        ignore_eos=self.args.ignore_eos,
-                        goodput_config_dict=self.goodput_config_dict,
-                        max_concurrency=batch,
-                        pod_num=int(self.metadata_dict.get('replicas', 1)),
-                        question_label='dynamic',
-                        response_mode=self.args.response_mode
+            if self.args.enable_auto_batch:
+                total_results, valid_results = asyncio.run(
+                    find_optimal_batch(
+                        func=benchmark,
+                        batch=self.args.max_concurrency,
+                        func_kwargs=benchmark_dict,
+                        sparse_step=self.args.sparse_step,
+                        dense_step=self.args.dense_step,
+                        condition=self.goodput_config_dict,
+                        strategy=self.args.dynamic_strategy,
+                        result_key_map=self.args.dynamic_result_key_map,
                     ))
+                for batch, benchmark_result in total_results.items():
+                    benchmark_result['num_prompts'] = args_num_prompts[0]
+                    if self.args.save_result:
+                        logger.info('saving result...')
+                        self.save_result.output_csv(benchmark_result, self.args.result_filename, self.metadata_dict)
+                        self.save_result.output_db(benchmark_result, self.args.result_filename, self.metadata_dict)
+            else:
+                for batch, num_prompts in zip(self.args.max_concurrency, args_num_prompts):
+                    input_requests = self.load_dataset.sample_requests(
+                        num_requests=num_prompts,
+                        tokenizer=self.tokenizer,
+                        fixed_output_len=self.args.dynamic_output_len,
+                        shuffle=self.args.shuffle,
+                        prompt_max_len=self.args.dynamic_input_len,
+                        prompt_len_scale=self.args.dynamic_prompt_len_scale,
+                        enable_same_prompt=self.args.enable_same_prompt
+                    )
+                    benchmark_result = asyncio.run(
+                        benchmark(
+                            api_url=self.api_url,
+                            base_url=self.base_url,
+                            model_id=self.model_id,
+                            input_requests=input_requests,
+                            logprobs=self.args.logprobs,
+                            best_of=self.args.best_of,
+                            request_rate=self.args.request_rate,
+                            burstiness=self.args.burstiness,
+                            open_pbar=self.args.open_pbar,
+                            profile=self.args.profile,
+                            selected_percentile_metrics=self.args.percentile_metrics.split(","),
+                            selected_percentiles=[
+                                float(p) for p in self.args.metric_percentiles.split(",")
+                            ],
+                            ignore_eos=self.args.ignore_eos,
+                            goodput_config_dict=self.goodput_config_dict,
+                            max_concurrency=batch,
+                            pod_num=int(self.metadata_dict.get('replicas', 1)),
+                            question_label='dynamic',
+                            response_mode=self.args.response_mode,
+                            mode='dynamic'
+                        ))
 
-                benchmark_result['num_prompts'] = num_prompts
+                    benchmark_result['num_prompts'] = num_prompts
 
-                if self.args.save_result:
-                    logger.info('saving result...')
-                    self.save_result.output_csv(benchmark_result, self.args.result_filename, self.metadata_dict)
-                    self.save_result.output_db(benchmark_result, self.args.result_filename, self.metadata_dict)
+                    if self.args.save_result:
+                        logger.info('saving result...')
+                        self.save_result.output_csv(benchmark_result, self.args.result_filename, self.metadata_dict)
+                        self.save_result.output_db(benchmark_result, self.args.result_filename, self.metadata_dict)
+
         except Exception as e:
             logger.error(f"Error occurred: {e}")
             raise e
@@ -592,10 +645,10 @@ class BenchmarkRunner:
                     db_path=Path(self.args.result_dir) / Path(
                         f'{self.args.result_filename}.db'),
                     mode='dynamic',
-                    stop_slo_ttft=self.stop_slo_dict['ttft'],
-                    stop_slo_throughput=self.stop_slo_dict['throughput'],
+                    goodput=self.goodput_config_dict,
                     tested_input_output_label=tuple(['dynamic']),
                     result_dir=Path(self.args.result_dir),
-                    export_col=self.args.export_col
+                    export_col=self.args.export_col,
+                    result_dirname=self.args.result_dirname
                 )
             pass
