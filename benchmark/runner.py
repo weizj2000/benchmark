@@ -52,7 +52,10 @@ async def get_request(
     # Calculate scale parameter theta to maintain the desired request_rate.
     assert burstiness > 0, (
         f"A positive burstiness factor is expected, but given {burstiness}.")
-    theta = 1.0 / (request_rate * burstiness)
+    if isinstance(request_rate, list):
+        theta = 1.0 / (request_rate[0] * burstiness)
+    else:
+        theta = 1.0 / (request_rate * burstiness)
 
     for request in input_requests:
         yield request
@@ -94,15 +97,6 @@ async def benchmark(
     if response_mode == 'openai':
         logger.debug("response_mode is openai")
         request_func = AsyncRequester.async_request_openai
-    # elif response_mode == 'kts':
-    #     logger.debug("response_mode is kts")
-    #     request_func = async_request_kts
-    # elif response_mode == 'hw':
-    #     logger.debug("response_mode is huawei")
-    #     request_func = async_request_hw
-    # elif response_mode == 'sglang':
-    #     logger.debug("response_mode is sglang")
-    #     request_func = async_request_sglang
     else:
         raise ValueError(f"Invalid response_mode: {response_mode}")
 
@@ -281,6 +275,7 @@ async def benchmark(
             # 'dynamic' to signify that it is in a dynamic state.
             "question_label": question_label if question_label else f"{input_requests[0][1]}:{input_requests[0][2]}",
             "batch": max_concurrency,
+            "request_rate": request_rate,
             "completed": metrics.completed / len(input_requests) * 100,  # x%
 
             "mean_input_tokens": int(metrics.mean_input),
@@ -485,7 +480,7 @@ class BenchmarkRunner:
                             input_requests=input_requests,
                             logprobs=self.args.logprobs,
                             best_of=self.args.best_of,
-                            request_rate=self.args.request_rate,
+                            request_rate=self.args.request_rate[-1] if isinstance(self.args.request_rate, list) else self.args.request_rate,
                             burstiness=self.args.burstiness,
                             open_pbar=self.args.open_pbar,
                             profile=self.args.profile,
@@ -511,7 +506,7 @@ class BenchmarkRunner:
                     if self.args.enable_acc:
                         expect_batch = stop_strategy.calculate_accuracy_batch(max_batch,
                                                                               benchmark_result[stop_strategy.acc_col],
-                                                                              self.goodput_config_dict['ttft'])
+                                                                              tuple(self.goodput_config_dict.values())[0])
                         if expect_batch:
                             logger.info(f"Insert {expect_batch} into batch list.")
                             _running_batch.insert(0, expect_batch)
@@ -523,17 +518,18 @@ class BenchmarkRunner:
             raise e
         finally:
             if self.args.export_to_excel:
-                self.save_result.export_to_excel(case_id=self.metadata_dict.get('case_id', 'performance_test'),
-                                                 model_id=self.model_id,
-                                                 db_path=Path(self.args.result_dir) / Path(
-                                                     f'{self.args.result_filename}.db'),
-                                                 mode='static',
-                                                 goodput=self.goodput_config_dict,
-                                                 tested_input_output_label=tuple(tested_input_output_label),
-                                                 result_dir=Path(self.args.result_dir),
-                                                 export_col=self.args.export_col,
-                                                 result_dirname=self.args.result_dirname
-                                                 )
+                self.save_result.export_to_excel(
+                    case_id=self.metadata_dict.get('case_id', 'performance_test'),
+                    model_id=self.model_id,
+                    db_path=Path(self.args.result_dir) / Path(
+                     f'{self.args.result_filename}.db'),
+                    mode='static',
+                    goodput=self.goodput_config_dict,
+                    tested_input_output_label=tuple(tested_input_output_label),
+                    result_dir=Path(self.args.result_dir),
+                    export_col=self.args.export_col,
+                    result_dirname=self.args.result_dirname
+                )
             pass
 
     def run_dynamic(self):
@@ -581,9 +577,8 @@ class BenchmarkRunner:
                         func_kwargs=benchmark_dict,
                         sparse_step=self.args.sparse_step,
                         dense_step=self.args.dense_step,
-                        condition=self.goodput_config_dict,
-                        strategy=self.args.dynamic_strategy,
-                        result_key_map=self.args.dynamic_result_key_map,
+                        goodput=self.goodput_config_dict,
+                        strategy=self.args.dynamic_strategy
                     ))
                 for batch, benchmark_result in total_results.items():
                     benchmark_result['num_prompts'] = args_num_prompts[0]
@@ -610,7 +605,7 @@ class BenchmarkRunner:
                             input_requests=input_requests,
                             logprobs=self.args.logprobs,
                             best_of=self.args.best_of,
-                            request_rate=self.args.request_rate,
+                            request_rate=self.args.request_rate[-1] if isinstance(self.args.request_rate, list) else self.args.request_rate,
                             burstiness=self.args.burstiness,
                             open_pbar=self.args.open_pbar,
                             profile=self.args.profile,

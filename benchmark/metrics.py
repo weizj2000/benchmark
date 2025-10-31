@@ -1,11 +1,19 @@
 # -*- coding: utf-8 -*-
 import numpy as np
-import pandas as pd
 from typing import Dict, List, Tuple
 
 from .const import MILLISECONDS_TO_SECONDS_CONVERSION
 from .models import RequestFuncOutput, BenchmarkMetrics
 from .util import logger
+
+
+def get_first_matching_value(dict_data, candidate_keys_ordered, default=float('inf'), convert_ms=True):
+    all_keys = dict_data.keys()
+    for key in candidate_keys_ordered:
+        if key in all_keys:
+            value = dict_data[key]
+            return value / MILLISECONDS_TO_SECONDS_CONVERSION if convert_ms else value
+    return default
 
 
 class MetricsCalculator:
@@ -26,8 +34,8 @@ class MetricsCalculator:
         all_tpots: List[float] = []
         ttfts: List[float] = []
         e2els: List[float] = []
-        out_throughputs: List[float] = []  # throughput of every request
-        prefill_throughputs: List[float] = []  # include ttft and time of queue
+        out_throughputs: List[float] = []
+        prefill_throughputs: List[float] = []
         decode_throughputs: List[float] = []
 
         for i in range(len(outputs)):
@@ -64,6 +72,12 @@ class MetricsCalculator:
         mean_goodput_tpot = -1
         mean_goodput_e2el = -1
         mean_goodput_throughput = -1
+
+        ttft_priority_keys = ["mean_TTFT", "TTFT_P90", "TTFT_P95", "TTFT_P99", "ttft"]
+        tpot_priority_keys = ["mean_TPOT", "TPOT_P90", "TPOT_P95", "TPOT_P99", "tpot"]
+        e2el_priority_keys = ["mean_E2EL", "E2EL_P90", "E2EL_P95", "E2EL_P99", "e2el"]
+        throughput_priority_keys = ["mean_output_throughput", "output_throughput", "throughput"]
+
         if goodput_config_dict:
             valid_metrics, slo_values = {}, {}
             valid_metrics['ttft'] = ttfts
@@ -71,28 +85,24 @@ class MetricsCalculator:
             valid_metrics['e2el'] = e2els
             valid_metrics['throughput'] = decode_throughputs  # the same as the above form
 
-            if "ttft" in goodput_config_dict:
-                slo_values['ttft'] = goodput_config_dict["ttft"] / MILLISECONDS_TO_SECONDS_CONVERSION
-            else:
-                slo_values['ttft'] = float('inf')
+            slo_values['ttft'] = get_first_matching_value(
+                goodput_config_dict, ttft_priority_keys,
+                default=float('inf'), convert_ms=True
+            )
+            slo_values['tpot'] = get_first_matching_value(
+                goodput_config_dict, tpot_priority_keys,
+                default=float('inf'), convert_ms=True
+            )
+            slo_values['e2el'] = get_first_matching_value(
+                goodput_config_dict, e2el_priority_keys,
+                default=float('inf'), convert_ms=True
+            )
+            slo_values['throughput'] = get_first_matching_value(
+                goodput_config_dict, throughput_priority_keys,
+                default=float('0'), convert_ms=False
+            )
 
-            if "tpot" in goodput_config_dict:
-                slo_values['tpot'] = goodput_config_dict["tpot"] / MILLISECONDS_TO_SECONDS_CONVERSION
-            else:
-                slo_values['tpot'] = float('inf')
-
-            if "e2el" in goodput_config_dict:
-                slo_values['e2el'] = goodput_config_dict["e2el"] / MILLISECONDS_TO_SECONDS_CONVERSION
-            else:
-                slo_values['e2el'] = float('inf')
-
-            if 'throughput' in goodput_config_dict:
-                slo_values['throughput'] = goodput_config_dict["throughput"]
-            else:
-                slo_values['throughput'] = -float('inf')
-
-            good_ttfts, good_tpots, good_e2els, good_throughputs = np.array([]), np.array([]), np.array([]), np.array(
-                [])
+            good_ttfts, good_tpots, good_e2els, good_throughputs = np.array([]), np.array([]), np.array([]), np.array([])
             for _ttft, _tpot, _e2el, _throughput in zip(valid_metrics['ttft'], valid_metrics['tpot'],
                                                         valid_metrics['tpot'], valid_metrics['throughput']):
                 if (_ttft <= slo_values['ttft'] and _tpot <= slo_values['tpot'] and
@@ -161,13 +171,11 @@ class MetricsCalculator:
             median_e2el_ms=np.median(e2els or 0) * 1000,
             percentiles_e2el_ms=[(p, np.percentile(e2els or 0, p) * 1000)
                                  for p in selected_percentiles],
-
             mean_prefilling_throughput=np.mean(prefill_throughputs or 0),
             std_prefilling_throughput=np.std(prefill_throughputs or 0),
             median_prefilling_throughput=np.median(prefill_throughputs or 0),
             percentiles_prefilling_throughput=[(p, np.percentile(prefill_throughputs or 0, p))
                                                for p in selected_percentiles],
-
             mean_decoding_throughput=np.mean(decode_throughputs or 0),
             std_decoding_throughput=np.std(decode_throughputs or 0),
             median_decoding_throughput=np.median(decode_throughputs or 0),

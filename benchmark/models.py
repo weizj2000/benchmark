@@ -19,7 +19,7 @@ class SQLTable:
         # metadata
         "case_id", "arch", "gpu", "model", "gpu_num", "replicas", "question_label",
         # args
-        "batch", "num_prompts",
+        "batch", "request_rate", "num_prompts",
         # dataset
         "mean_input_tokens", "mean_output_tokens", "total_prompt_tokens", "total_completion_tokens",
         # metrics
@@ -50,7 +50,9 @@ class SQLTable:
         ## inference framework of backend
         'backend',
         'other_params',
-        'created_at'
+        'created_at',
+        'prefill_throughput_per_gpu',
+        'decode_throughput_per_gpu'
     ]
 
     sql_summary_title = [
@@ -63,6 +65,7 @@ class SQLTable:
         "replicas INT",
         "question_label TEXT",
         "batch INT",
+        "request_rate FLOAT",
         "num_prompts INT",
         "mean_input_tokens FLOAT",
         "mean_output_tokens FLOAT",
@@ -117,7 +120,9 @@ class SQLTable:
         "completed INT",
         "backend TEXT",
         "other_params TEXT DEFAULT ''",
-        "created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP"
+        "created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP",
+        "prefill_throughput_per_gpu FLOAT",
+        "decode_throughput_per_gpu FLOAT"
     ]
 
 

@@ -1,7 +1,6 @@
 # -*- coding: utf-8 -*-
 import argparse
 import json
-import os
 
 
 def parse_input_list(value):
@@ -16,6 +15,23 @@ def parse_input_dict(value):
     except json.JSONDecodeError:
         # 解析失败时抛出友好的错误提示
         raise argparse.ArgumentTypeError(f"Invalid JSON format for --goodput: {value}")
+
+
+def parse_request_rate(value):
+    """解析请求速率参数，支持单个浮点数或逗号分隔的浮点数列表"""
+    if ',' in value:
+        # 处理逗号分隔的多个值
+        parts = value.split(',')
+        try:
+            return [float(part.strip()) for part in parts]
+        except ValueError:
+            raise argparse.ArgumentTypeError(f"Invalid float values: {value}")
+    else:
+        # 处理单个浮点数
+        try:
+            return float(value)
+        except ValueError:
+            raise argparse.ArgumentTypeError(f"Invalid float value: {value}")
 
 
 def parse_args():
@@ -47,8 +63,8 @@ def parse_args():
                         default=None)
     parser.add_argument('--max-concurrency', type=parse_input_list,
                         help='A list, Maximum number of concurrent requests. default is'
-                             '1,2,4,8,16,32,64,128,200,256',
-                        default=[1, 2, 4, 8, 16, 32, 64, 128, 200, 256]
+                             '1, 8, 16, 32, 64, 128, 200, 300, 400, 500, 600',
+                        default=[1, 8, 16, 32, 64, 128, 200, 300, 400, 500, 600]
                         )
     # dataset options
     parser.add_argument('--dataset-path', type=str,
@@ -75,7 +91,7 @@ def parse_args():
                         default=None
                         )
     # test options
-    parser.add_argument('--request-rate', type=float, default=float("inf"),
+    parser.add_argument('--request-rate', type=parse_request_rate, default=float("inf"),
                         help='Request rate in requests per second.')
     parser.add_argument('--burstiness', type=float, default=1.0,
                         help='Burstiness factor for the Poisson process.')
@@ -118,7 +134,7 @@ def parse_args():
                              "For more context on the definition of "
                              "goodput, refer to DistServe paper: https://arxiv.org/pdf/2401.09670 "
                              "and the blog: https://hao-ai-lab.github.io/blogs/distserve",
-                        default={"ttft": 10000, "tpot": 100}  # 新slo，注意非deepseek-r1时为该指标线
+                        default={"TTFT_P90": 10000, "TPOT_P90": 100}
                         )
     # static mode test params
     parser.add_argument('--input-len', type=parse_input_list,
@@ -134,8 +150,8 @@ def parse_args():
     parser.add_argument('--stop-slo', type=parse_input_dict,
                         help='Whether to stop the benchmark '
                              'if the SLO has been achieved.'
-                             'default is {"ttft": 15000, "tpot": 150}',
-                        default={"ttft": 15000, "tpot": 150}
+                             'default is {"TTFT_P90": 15000, "TPOT_P90": 150}',
+                        default={"TTFT_P90": 15000, "TPOT_P90": 150}
                         )
     parser.add_argument("--disable-acc", action="store_true",
                         help="Whether to enable accuracy test. "
@@ -169,7 +185,7 @@ def parse_args():
                              '--num-prompts can input multiple values separated by spaces, '
                              'with a length consistent with max currency, '
                              'and each element corresponds one-to-one.',
-                        default=[200]
+                        default=[1000]
                         )
     parser.add_argument('--disable-pbar', action='store_true',
                         help='Whether to open progress bar.',
@@ -178,21 +194,16 @@ def parse_args():
                         help='Whether to enable auto find best batch.',
                         )
     parser.add_argument('--sparse-step', type=int,
-                        default=50,
+                        default=30,
                         help='Sparsity sampling step size parameter, takes effect when auto-batch mode is enabled.',
                         )
     parser.add_argument('--dense-step', type=int,
-                        default=20,
+                        default=10,
                         help='Dense sampling step size parameter, takes effect when auto-batch mode is enabled.',
                         )
     parser.add_argument('--dynamic-strategy', type=str,
                         choices=["fast", "exhaustive"], default="fast",
                         help='Dynamic test mode strategy. default is fast.',
-                        )
-    parser.add_argument('--dynamic-result-key-map', type=parse_input_dict,
-                        help='Auto mapping of dynamic result keys to the corresponding metric names. '
-                             'default is {"ttft": "TTFT_P99", "tpot": "TPOT_P99"}',
-                        default={"ttft": "TTFT_P99", "tpot": "TPOT_P99"}
                         )
     # result save options
     # parser = parser.add_argument_group("save options")
@@ -223,7 +234,7 @@ def parse_args():
     parser.add_argument("--result-dirname",
                         type=str,
                         help="Specify the directory name to save benchmark excel results.",
-                        default='results')
+                        default='defualt_params')
     parser.add_argument("--disable-export-to-excel", action="store_true",
                         help="Specify to export benchmark results to excel.")
     parser.add_argument("--export-col", nargs="*",
@@ -248,3 +259,4 @@ if __name__ == "__main__":
     args = parse_args()
     print(type(args.max_concurrency), args.max_concurrency)
     print(type(args.goodput), args.goodput)
+    print(type(args.request_rate), args.request_rate)

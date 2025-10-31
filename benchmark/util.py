@@ -80,7 +80,8 @@ class IOUtils:
                               df: pd.DataFrame, case_id: str, model_id: str, output_dir: Path,
                               label_color: str = 'question_label',
                               color_col_values: tuple = ("64:128", "128:2048", "1024:128", "2048:2048"),
-                              label_max: str = 'temp_label_max_batch'
+                              label_max: str = 'temp_label_max_batch',
+                              mode: str = 'static'
                               ):
         if not output_dir.exists():
             output_dir.mkdir(parents=True, exist_ok=True)
@@ -134,7 +135,7 @@ class IOUtils:
 
         self.delete_cols_remain_specify_cols_name(new_sheet)
         self.auto_adjust_column_width(new_sheet)
-        _save_name = '_'.join([Path(model_id).name, time.strftime("%Y%m%d%H%M%S"), str(case_id)])
+        _save_name = '_'.join([mode, Path(model_id).name, time.strftime("%Y%m%d%H%M%S"), str(case_id)])
         new_workbook.save(output_dir / f'{_save_name}.xlsx')
 
     @staticmethod
@@ -414,6 +415,11 @@ class Result:
 
     def output_db(self, result_dict, filename, metadata: OrderedDict):
         result_dict = self.combine_save_data(metadata, result_dict)
+        mean_prefill = result_dict.get("mean_prefill_throughput", 0)
+        mean_decode = result_dict.get("mean_decode_throughput", 0)
+        gpu_num = result_dict.get("gpu_num", 1)
+        result_dict["prefill_throughput_per_gpu"] = float(mean_prefill) / float(gpu_num)
+        result_dict["decode_throughput_per_gpu"] = float(mean_decode) / float(gpu_num)
 
         dbpath = os.path.join(self.output_dir, filename + '.db')
         conn = sqlite3.connect(dbpath)
@@ -439,9 +445,13 @@ class Result:
 
     def output_csv(self, result_dict, filename, metadata: OrderedDict):
         result_dict = self.combine_save_data(metadata, result_dict)
+        mean_prefill = result_dict.get("mean_prefill_throughput", 0)
+        mean_decode = result_dict.get("mean_decode_throughput", 0)
+        gpu_num = result_dict.get("gpu_num", 1)
+        result_dict["prefill_throughput_per_gpu"] = float(mean_prefill) / float(gpu_num)
+        result_dict["decode_throughput_per_gpu"] = float(mean_decode) / float(gpu_num)
 
         filename = Path(filename).name + ".csv"
-
         result_path = os.path.join(self.output_dir, filename)
 
         file_exists = os.path.isfile(result_path)
@@ -476,9 +486,8 @@ class Result:
         else:
             raise ValueError(f"Invalid mode: {mode}")
 
-        slo_ttft = goodput.get("ttft")
-        slo_throughput = goodput.get("throughput")
-        slo_tpot = goodput.get("tpot")
+        conditions = tuple(goodput.keys())
+        thresholds = tuple(goodput.values())
 
         export_col = ', ' + ', '.join(export_col) if export_col else ''
 
@@ -488,8 +497,8 @@ class Result:
                 conn=sqlite3.connect(db_path),
                 mode=mode,
                 to_round=2),
-            conditions=('TTFT_P99', 'TPOT_P99'),
-            thresholds=(slo_ttft, slo_tpot),
+            conditions=conditions,
+            thresholds=thresholds,
             compare_methods=('<', '<'),
             target='batch',
             tmp_col='temp_label_max_batch',
@@ -503,7 +512,8 @@ class Result:
             label_max='temp_label_max_batch',
             case_id=case_id,
             model_id=model_id,
-            output_dir=Path(result_dir) / result_dirname
+            output_dir=Path(result_dir) / result_dirname,
+            mode=mode
         )
 
 
@@ -535,27 +545,15 @@ class StopStrategy:
         self.slo_line_arrived = False
 
     def at_slo(self, result_dict, stop_slo_dict, input_len, output_len):
-        # 指定要提取的键
-        keys_to_extract = ['TTFT_P99', 'TPOT_P99']
-
-        # 使用 items() 方法创建新字典
-        new_dict = dict((key, value) for key, value in result_dict.items() if key in keys_to_extract)
-
-        stop_ttft = stop_slo_dict['ttft']
-        # if input_len >= 2048:
-        #     stop_ttft += 0 * MILLISECONDS_TO_SECONDS_CONVERSION
-
-        flag_ttft, flag_throughput = False, False
-        if 'ttft' in stop_slo_dict:
-            flag_ttft = new_dict['TTFT_P99'] > stop_ttft
-        if 'tpot' in stop_slo_dict:
-            flag_throughput = new_dict['TPOT_P99'] > stop_slo_dict['tpot']
-
-        # During the ACC testing,
-        # testing a batch again will cause the flag to be set to False once more,
-        # resulting in the need to test a larger batch.
-        self.slo_line_arrived = flag_ttft or flag_throughput or self.slo_line_arrived
-        # self.slo_line_arrived = flag_throughput
+        # 计算需要检查的键集合（stop_slo_dict和result_dict的交集）
+        keys_to_check = set(stop_slo_dict.keys()) & set(result_dict.keys())
+        # 使用any()短路特性快速判断是否存在违规SLO
+        slo_violated = any(
+            result_dict[key] > stop_slo_dict[key]
+            for key in keys_to_check
+        )
+        # 更新状态标志（使用位或操作保持原有状态）
+        self.slo_line_arrived |= slo_violated
 
         logger.info(f"check SLO flag '{input_len}:{output_len}' {self.slo_line_arrived}")
 
@@ -628,5 +626,3 @@ class StopStrategy:
 
         logger.info(f"Expect Value: {expected_value}. Attempting to get accuracy batch: {calculated_batch}")
         return calculated_batch
-
-
